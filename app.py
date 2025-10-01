@@ -108,16 +108,23 @@ def list_notes():
         con.close()
     return render_template('notes.html', notes=notes)
 
+def get_note_for_user(con, note_id: int, user_id: int):
+    return con.execute('SELECT * FROM notes WHERE id = ? AND user_id = ?', (note_id, user_id)).fetchone()
+
+
 @app.route('/note/<int:note_id>')
 def view_note(note_id):
     require_login()
     con = connect_db()
-    # IDOR: no ownership check
-    note = con.execute('SELECT * FROM notes WHERE id=?', (note_id,)).fetchone()  # VULN (no user_id filter)
-    con.close()
+    try:
+        note = get_note_for_user(con, note_id, session['user_id'])
+    finally:
+        con.close()
+
     if not note:
         abort(404)
     return render_template('note_view.html', note=note)
+
 
 @app.route('/note/create', methods=['GET','POST'])
 def create_note():
@@ -127,45 +134,69 @@ def create_note():
             title = request.form.get('title', '').strip()
             content = request.form.get('content', '').strip()
             con = connect_db()
-            con.execute('INSERT INTO notes(user_id, title, content) VALUES (?, ?, ?)', (session['user_id'], title, content))
-            con.commit()
-            con.close()
+            try:
+                con.execute(
+                    'INSERT INTO notes(user_id, title, content) VALUES (?, ?, ?)',
+                    (session['user_id'], title, content)
+                )
+                con.commit()
+            finally:
+                con.close()
+
             flash('Note created', 'success')
             return redirect(url_for('list_notes'))
-        except Exception as e:
+        except Exception:
             flash('Internal server error. Please try again later.', 'danger')
             return render_template('note_edit.html', note=None), 500
 
     return render_template('note_edit.html', note=None)
 
+
 @app.route('/note/<int:note_id>/edit', methods=['GET','POST'])
 def edit_note(note_id):
     require_login()
     con = connect_db()
-    # IDOR: fetch without user ownership check
-    note = con.execute('SELECT * FROM notes WHERE id=?', (note_id,)).fetchone()  # VULN
-    if not note:
+    try:
+        note = get_note_for_user(con, note_id, session['user_id'])
+        if not note:
+            abort(404)
+
+        if request.method == 'POST':
+            title = request.form.get('title','').strip()
+            content = request.form.get('content','').strip()
+            cur = con.execute(
+                'UPDATE notes SET title = ?, content = ? WHERE id = ? AND user_id = ?',
+                (title, content, note_id, session['user_id'])
+            )
+            con.commit()
+
+            if cur.rowcount == 0:
+                abort(403)
+
+            flash('Note updated', 'success')
+            return redirect(url_for('view_note', note_id=note_id))
+
+    finally:
         con.close()
-        abort(404)
-    if request.method == 'POST':
-        title = request.form.get('title','').strip()
-        content = request.form.get('content','').strip()
-        con.execute('UPDATE notes SET title=?, content=? WHERE id=?', (title, content, note_id))  # VULN: no user check
-        con.commit()
-        con.close()
-        flash('Note updated', 'success')
-        return redirect(url_for('view_note', note_id=note_id))
-    con.close()
+
     return render_template('note_edit.html', note=note)
+
 
 @app.route('/note/<int:note_id>/delete', methods=['POST'])
 def delete_note(note_id):
     require_login()
     con = connect_db()
-    # IDOR: delete without verifying owner
-    con.execute('DELETE FROM notes WHERE id=?', (note_id,))  # VULN
-    con.commit()
-    con.close()
+    try:
+        # Delete only if the note belongs to the current user
+        cur = con.execute('DELETE FROM notes WHERE id = ? AND user_id = ?', (note_id, session['user_id']))
+        con.commit()
+
+        if cur.rowcount == 0:
+            abort(404)
+
+    finally:
+        con.close()
+
     flash('Note deleted', 'warning')
     return redirect(url_for('list_notes'))
 
