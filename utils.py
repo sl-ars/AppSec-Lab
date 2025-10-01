@@ -2,12 +2,6 @@ import base64
 import hashlib
 import hmac
 import os
-import pickle
-
-def deserialize(data_b64: str):
-    raw = base64.b64decode(data_b64)
-    return pickle.loads(raw)  # arbitrary code execution
-
 
 def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
     if salt is None:

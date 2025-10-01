@@ -1,16 +1,11 @@
 import io
 import csv
 import os
-import pickle
 import sqlite3
-import base64
-import traceback
-
 from flask import Flask, request, render_template, redirect, url_for, session, abort, flash, send_file
-from utils import deserialize, hash_password, verify_password
+from utils import  hash_password, verify_password
 
 app = Flask(__name__)
-# loads hardcoded secrets (bad)
 app.config.from_object('config')
 app.secret_key = app.config.get('SECRET_KEY')
 app.debug = True
@@ -201,7 +196,6 @@ def delete_note(note_id):
     flash('Note deleted', 'warning')
     return redirect(url_for('list_notes'))
 
-# --- Insecure deserialization (pickle) ---
 @app.route('/import', methods=['POST'])
 def import_notes():
     require_login()
