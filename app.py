@@ -1,4 +1,5 @@
 import io
+import csv
 import os
 import pickle
 import sqlite3
@@ -205,48 +206,32 @@ def delete_note(note_id):
 def import_notes():
     require_login()
 
-    # Try file upload first
     uploaded = request.files.get('file')
-    data_b64 = None
-
-    if uploaded and uploaded.filename:
-        try:
-            raw = uploaded.read()
-            if isinstance(raw, bytes):
-                data_b64 = raw.decode('utf-8').strip()
-            else:
-                data_b64 = str(raw).strip()
-        except Exception as e:
-            flash(f'Failed to read uploaded file: {e}', 'danger')
-            return redirect(url_for('list_notes'))
-
-    if not data_b64:
-        data_b64 = request.form.get('data', '').strip()
-
-    if not data_b64:
-        flash('No import data provided.', 'warning')
+    if not uploaded or not uploaded.filename:
+        flash('No file provided.', 'warning')
         return redirect(url_for('list_notes'))
 
     try:
-        items = deserialize(data_b64) # RCE
-        if not isinstance(items, list):
-            flash('Imported payload is not a list of notes.', 'danger')
-            return redirect(url_for('list_notes'))
+        # Read as text (CSV is text-based)
+        stream = io.StringIO(uploaded.read().decode("utf-8"))
+        reader = csv.DictReader(stream)
 
         con = connect_db()
         inserted = 0
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            title = it.get('title', '') if isinstance(it.get('title', ''), str) else str(it.get('title', ''))
-            content = it.get('content', '') if isinstance(it.get('content', ''), str) else str(it.get('content', ''))
-            con.execute('INSERT INTO notes(user_id, title, content) VALUES (?, ?, ?)', (session['user_id'], title, content))
+        for row in reader:
+            title = str(row.get("title", "")).strip()
+            content = str(row.get("content", "")).strip()
+            con.execute(
+                "INSERT INTO notes(user_id, title, content) VALUES (?, ?, ?)",
+                (session['user_id'], title, content),
+            )
             inserted += 1
         con.commit()
         con.close()
 
         flash(f'Import successful: {inserted} notes added.', 'success')
         return redirect(url_for('list_notes'))
+
     except Exception as e:
         flash(f'Import failed: {e}', 'danger')
         return redirect(url_for('list_notes'))
@@ -263,29 +248,28 @@ def export_notes():
     con = connect_db()
     try:
         rows = con.execute(
-            'SELECT id, user_id, title, content FROM notes WHERE user_id=? ORDER BY id DESC',
-            (user_id,)
+            "SELECT id, title, content FROM notes WHERE user_id=? ORDER BY id DESC",
+            (user_id,),
         ).fetchall()
     finally:
         con.close()
 
-    items = [
-        {"id": r["id"], "title": r["title"], "content": r["content"]}
-        for r in rows
-    ]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    # CSV header
+    writer.writerow(["id", "title", "content"])
+    for r in rows:
+        writer.writerow([r["id"], r["title"], r["content"]])
 
-    payload = base64.b64encode(pickle.dumps(items))
+    data = buf.getvalue().encode("utf-8")
+    buf.close()
 
-    filename = f"notes_user_{user_id}.pkl.b64"
-
-    buf = io.BytesIO(payload)
-    buf.seek(0)
+    filename = f"notes_user_{user_id}.csv"
     return send_file(
-        buf,
+        io.BytesIO(data),
         as_attachment=True,
         download_name=filename,
-        mimetype='text/plain'
+        mimetype="text/csv",
     )
-
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000, debug=True, use_debugger=True, use_reloader=True)

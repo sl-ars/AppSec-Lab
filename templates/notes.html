@@ -2,16 +2,17 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h3>All Notes</h3>
-  <div class="d-flex gap-2 align-items-center">
-    <a class="btn btn-outline-secondary" href="/export">Export my notes</a>
-    <form class="d-flex align-items-center" method="post" action="/import" enctype="multipart/form-data" style="gap:8px;">
-      <label class="btn btn-outline-primary mb-0" for="import-file">Import</label>
-      <input id="import-file" name="file" type="file" accept=".b64,.pkl,.txt" style="display:none;">
-      <button type="submit" class="btn btn-warning">Upload</button>
-    </form>
+<div class="d-flex gap-2 align-items-center">
+  <a class="btn btn-outline-secondary" href="/export">Export my notes (CSV)</a>
 
-    <a class="btn btn-success" href="/note/create">+ New Note</a>
-  </div>
+  <form class="d-flex align-items-center" method="post" action="/import" enctype="multipart/form-data" style="gap:8px;">
+    <label class="btn btn-outline-primary mb-0" for="import-file">Import CSV</label>
+    <input id="import-file" name="file" type="file" accept=".csv,text/csv" style="display:none;">
+    <button type="submit" class="btn btn-warning">Upload</button>
+  </form>
+
+  <a class="btn btn-success" href="/note/create">+ New Note</a>
+</div>
 </div>
 <table class="table table-striped">
   <thead>
