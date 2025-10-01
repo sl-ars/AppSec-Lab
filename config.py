@@ -1,1 +1,5 @@
-SECRET_KEY = '#@HOFEW(dsdoij#9#nds312j)EnoEWIoh$o2h3hofiwhndo2h3o'
+import os
+from flask.cli import load_dotenv
+
+load_dotenv()
+SECRET_KEY = os.environ.get('SECRET_KEY')
