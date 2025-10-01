@@ -118,8 +118,8 @@ def create_note():
     require_login()
     if request.method == 'POST':
         try:
-            title = request.form.get('title').strip()
-            content = request.form.get('content').strip()
+            title = request.form.get('title', '').strip()
+            content = request.form.get('content', '').strip()
             con = connect_db()
             con.execute('INSERT INTO notes(user_id, title, content) VALUES (?, ?, ?)', (session['user_id'], title, content))
             con.commit()
@@ -127,8 +127,8 @@ def create_note():
             flash('Note created', 'success')
             return redirect(url_for('list_notes'))
         except Exception as e:
-            tb = traceback.format_exc()
-            return f"<h3>Exception occurred:</h3><pre>{tb}</pre>", 500
+            flash('Internal server error. Please try again later.', 'danger')
+            return render_template('note_edit.html', note=None), 500
 
     return render_template('note_edit.html', note=None)
 
