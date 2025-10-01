@@ -6,7 +6,7 @@ import base64
 import traceback
 
 from flask import Flask, request, render_template, redirect, url_for, session, abort, flash, send_file
-from utils import deserialize
+from utils import deserialize, hash_password, verify_password
 
 app = Flask(__name__)
 # loads hardcoded secrets (bad)
@@ -35,13 +35,19 @@ if not os.path.exists(DB_PATH):
 def register():
     if request.method == 'POST':
         username = request.form.get('username','').strip()
-        password = request.form.get('password','').strip()  # plain text (bad)
+        password = request.form.get('password','').strip()
         if not username or not password:
             flash('Username and password required', 'danger')
             return render_template('register.html')
+
+        # create salt+hash
+        salt, pwd_hash = hash_password(password)
+        stored = f"{salt}${pwd_hash}"
+
         con = connect_db()
         try:
-            con.execute('INSERT INTO users(username, password) VALUES (?, ?)', (username, password))
+            # keep using parameterized query
+            con.execute('INSERT INTO users(username, password) VALUES (?, ?)', (username, stored))
             con.commit()
             flash('Registered! Now login.', 'success')
             return redirect(url_for('login'))
@@ -57,12 +63,12 @@ def login():
         username = request.form.get('username','')
         password = request.form.get('password','')
         # SQLi: unsafely concatenated query
-        query = f"SELECT id FROM users WHERE username='{username}' AND password='{password}'"  # VULN
+        query = f"SELECT id, password FROM users WHERE username='{username}'"  # VULN
         con = connect_db()
         try:
             cur = con.execute(query)
             row = cur.fetchone()
-            if row:
+            if row and row['password'] and verify_password(row['password'], password):
                 session['user_id'] = row['id']
                 session['username'] = username
                 flash('Logged in', 'success')
@@ -72,6 +78,7 @@ def login():
         finally:
             con.close()
     return render_template('login.html')
+
 
 @app.route('/logout')
 def logout():
