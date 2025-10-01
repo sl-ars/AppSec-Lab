@@ -63,10 +63,9 @@ def login():
         username = request.form.get('username','')
         password = request.form.get('password','')
         # SQLi: unsafely concatenated query
-        query = f"SELECT id, password FROM users WHERE username='{username}'"  # VULN
         con = connect_db()
         try:
-            cur = con.execute(query)
+            cur = con.execute('SELECT id, password FROM users WHERE username = ?', (username,))
             row = cur.fetchone()
             if row and row['password'] and verify_password(row['password'], password):
                 session['user_id'] = row['id']
