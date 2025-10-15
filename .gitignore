@@ -8,3 +8,5 @@ instance/
 .env.backup
 .idea
 .DS_Store
+notes.db
+.env
