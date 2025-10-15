@@ -14,3 +14,14 @@ CREATE TABLE notes (
   content TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT,
+    size INTEGER,
+    created_at INTEGER,
+    FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+)
