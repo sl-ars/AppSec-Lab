@@ -2,7 +2,11 @@ import io
 import csv
 import os
 import sqlite3
-from flask import Flask, request, render_template, redirect, url_for, session, abort, flash, send_file
+import time
+import mimetypes
+import uuid
+from pathlib import Path
+from flask import Flask, request, render_template, redirect, url_for, session, abort, flash, send_file, send_from_directory
 from utils import  hash_password, verify_password
 
 app = Flask(__name__)
@@ -11,6 +15,10 @@ app.secret_key = app.config.get('SECRET_KEY')
 app.debug = True
 
 DB_PATH = os.environ.get('DB_PATH', 'notes.db')
+
+# --- Upload config ---
+app.config.setdefault('UPLOAD_FOLDER', os.environ.get('UPLOAD_FOLDER', 'uploads'))
+Path(app.config['UPLOAD_FOLDER']).mkdir(parents=True, exist_ok=True)
 
 
 def connect_db():
@@ -36,13 +44,11 @@ def register():
             flash('Username and password required', 'danger')
             return render_template('register.html')
 
-        # create salt+hash
         salt, pwd_hash = hash_password(password)
         stored = f"{salt}${pwd_hash}"
 
         con = connect_db()
         try:
-            # keep using parameterized query
             con.execute('INSERT INTO users(username, password) VALUES (?, ?)', (username, stored))
             con.commit()
             flash('Registered! Now login.', 'success')
@@ -58,7 +64,6 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username','')
         password = request.form.get('password','')
-        # SQLi: unsafely concatenated query
         con = connect_db()
         try:
             cur = con.execute('SELECT id, password FROM users WHERE username = ?', (username,))
@@ -74,7 +79,6 @@ def login():
             con.close()
     return render_template('login.html')
 
-
 @app.route('/logout')
 def logout():
     session.clear()
@@ -88,7 +92,6 @@ def require_login():
 @app.route('/')
 def index():
     return redirect(url_for('list_notes'))
-
 
 # --- Notes CRUD ---
 @app.route('/notes')
@@ -104,9 +107,41 @@ def list_notes():
         con.close()
     return render_template('notes.html', notes=notes)
 
+
 def get_note_for_user(con, note_id: int, user_id: int):
     return con.execute('SELECT * FROM notes WHERE id = ? AND user_id = ?', (note_id, user_id)).fetchone()
 
+
+def _save_attachment_for_note(con, owner_user_id: int, note_id: int, file):
+    if not file or not file.filename:
+        return False, 'No file'
+
+    ext = file.filename.rsplit('.', 1)[1].lower()
+    storage_name = f"{file.filename}_{time.time()}.{ext}"
+    target_dir = _note_upload_dir(owner_user_id, note_id)
+    storage_path = target_dir / storage_name
+    file.save(storage_path)
+
+    mime_type = mimetypes.guess_type(str(storage_path))[0] or 'application/octet-stream'
+    size = storage_path.stat().st_size
+
+    con.execute(
+        'INSERT INTO attachments(note_id, filename, original_name, mime_type, size, created_at) '
+        'VALUES (?,?,?,?,?,?)',
+        (note_id, storage_name, file.filename, mime_type, size, int(time.time()))
+    )
+    return True, None
+
+
+def _note_upload_dir(user_id: int, note_id: int) -> Path:
+    base = Path(app.config['UPLOAD_FOLDER'])
+    p = base / str(user_id) / str(note_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_attachments(con, note_id: int):
+    return con.execute('SELECT * FROM attachments WHERE note_id = ? ORDER BY id DESC', (note_id,)).fetchall()
 
 @app.route('/note/<int:note_id>')
 def view_note(note_id):
@@ -114,13 +149,12 @@ def view_note(note_id):
     con = connect_db()
     try:
         note = get_note_for_user(con, note_id, session['user_id'])
+        if not note:
+            abort(404)
+        attachments = get_attachments(con, note_id)
     finally:
         con.close()
-
-    if not note:
-        abort(404)
-    return render_template('note_view.html', note=note)
-
+    return render_template('note_view.html', note=note, attachments=attachments)
 
 @app.route('/note/create', methods=['GET','POST'])
 def create_note():
@@ -129,20 +163,36 @@ def create_note():
         try:
             title = request.form.get('title', '').strip()
             content = request.form.get('content', '').strip()
+
             con = connect_db()
             try:
-                con.execute(
+                cur = con.execute(
                     'INSERT INTO notes(user_id, title, content) VALUES (?, ?, ?)',
                     (session['user_id'], title, content)
                 )
+                note_id = cur.lastrowid
+
+                files = request.files.getlist('files')
+                saved, failed = 0, 0
+                for f in files:
+                    if not f or not f.filename:
+                        continue
+                    ok, msg = _save_attachment_for_note(con, session['user_id'], note_id, f)
+                    if ok:
+                        saved += 1
+                    else:
+                        failed += 1
                 con.commit()
             finally:
                 con.close()
 
-            flash('Note created', 'success')
-            return redirect(url_for('list_notes'))
-        except Exception:
-            flash('Internal server error. Please try again later.', 'danger')
+            if saved or failed:
+                flash(f'Note created. Attachments saved: {saved}. Failed: {failed}.', 'info')
+            else:
+                flash('Note created', 'success')
+            return redirect(url_for('view_note', note_id=note_id))
+        except Exception as e:
+            flash(f'Internal server error: {e}', 'danger')
             return render_template('note_edit.html', note=None), 500
 
     return render_template('note_edit.html', note=None)
@@ -160,22 +210,39 @@ def edit_note(note_id):
         if request.method == 'POST':
             title = request.form.get('title','').strip()
             content = request.form.get('content','').strip()
+
             cur = con.execute(
                 'UPDATE notes SET title = ?, content = ? WHERE id = ? AND user_id = ?',
                 (title, content, note_id, session['user_id'])
             )
-            con.commit()
-
             if cur.rowcount == 0:
                 abort(403)
 
-            flash('Note updated', 'success')
+            files = request.files.getlist('files')
+            saved, failed = 0, 0
+            for f in files:
+                if not f or not f.filename:
+                    continue
+                ok, msg = _save_attachment_for_note(con, session['user_id'], note_id, f)
+                if ok:
+                    saved += 1
+                else:
+                    failed += 1
+
+            con.commit()
+            if saved or failed:
+                flash(f'Note updated. Attachments saved: {saved}. Failed: {failed}.', 'info')
+            else:
+                flash('Note updated', 'success')
+
             return redirect(url_for('view_note', note_id=note_id))
 
+        # GET
+        attachments = get_attachments(con, note_id)
     finally:
         con.close()
 
-    return render_template('note_edit.html', note=note)
+    return render_template('note_edit.html', note=note, attachments=attachments)
 
 
 @app.route('/note/<int:note_id>/delete', methods=['POST'])
@@ -183,13 +250,10 @@ def delete_note(note_id):
     require_login()
     con = connect_db()
     try:
-        # Delete only if the note belongs to the current user
         cur = con.execute('DELETE FROM notes WHERE id = ? AND user_id = ?', (note_id, session['user_id']))
         con.commit()
-
         if cur.rowcount == 0:
             abort(404)
-
     finally:
         con.close()
 
@@ -206,7 +270,6 @@ def import_notes():
         return redirect(url_for('list_notes'))
 
     try:
-        # Read as text (CSV is text-based)
         stream = io.StringIO(uploaded.read().decode("utf-8"))
         reader = csv.DictReader(stream)
 
@@ -230,7 +293,6 @@ def import_notes():
         flash(f'Import failed: {e}', 'danger')
         return redirect(url_for('list_notes'))
 
-
 @app.route('/export')
 def export_notes():
     require_login()
@@ -250,8 +312,7 @@ def export_notes():
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    # CSV header
-    writer.writerow(["id", "title", "content"])
+    writer.writerow(["id", "title", "content"])  # header
     for r in rows:
         writer.writerow([r["id"], r["title"], r["content"]])
 
@@ -265,5 +326,58 @@ def export_notes():
         download_name=filename,
         mimetype="text/csv",
     )
+
+@app.route('/note/<int:note_id>/upload', methods=['POST'])
+def upload_attachment(note_id):
+    require_login()
+    file = request.files.get('file')
+    if not file or not file.filename:
+        flash('No file selected.', 'warning')
+        return redirect(url_for('view_note', note_id=note_id))
+
+    con = connect_db()
+    try:
+        note = get_note_for_user(con, note_id, session['user_id'])
+        if not note:
+            abort(404)
+
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        storage_name = f"{file.filename}_{time.time()}.{ext}"
+        target_dir = _note_upload_dir(session['user_id'], note_id)
+        storage_path = target_dir / storage_name
+        file.save(storage_path)
+
+        mime_type = mimetypes.guess_type(str(storage_path))[0] or 'application/octet-stream'
+        size = storage_path.stat().st_size
+
+        con.execute(
+            'INSERT INTO attachments(note_id, filename, original_name, mime_type, size, created_at) VALUES (?,?,?,?,?,?)',
+            (note_id, storage_name, file.filename, mime_type, size, int(time.time()))
+        )
+        con.commit()
+
+        flash('File uploaded.', 'success')
+        return redirect(url_for('view_note', note_id=note_id))
+    finally:
+        con.close()
+
+@app.route('/note/<int:note_id>/file/<int:att_id>')
+def download_attachment(note_id, att_id):
+    require_login()
+    con = connect_db()
+    try:
+        note = get_note_for_user(con, note_id, session['user_id'])
+        if not note:
+            abort(404)
+        att = con.execute('SELECT * FROM attachments WHERE id = ? AND note_id = ?', (att_id, note_id)).fetchone()
+        if not att:
+            abort(404)
+        directory = _note_upload_dir(session['user_id'], note_id)
+        return send_from_directory(
+            directory, att['filename'], mimetype=att['mime_type'], as_attachment=True, download_name=att['original_name']
+        )
+    finally:
+        con.close()
+
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000, debug=True, use_debugger=True, use_reloader=True)

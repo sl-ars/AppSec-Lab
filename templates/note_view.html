@@ -3,6 +3,30 @@
 <h3>{{ note.title }}</h3>
 <p class="text-muted">Owner user_id: {{ note.user_id }}</p>
 <pre>{{ note.content }}</pre>
+
+<hr>
+<h5>Attachments</h5>
+{% if attachments %}
+  <ul>
+    {% for a in attachments %}
+      <li>
+        <a href="/note/{{note.id}}/file/{{a.id}}">{{ a.original_name }}</a>
+        <small class="text-muted">({{ a.mime_type or 'file' }}, {{ a.size }} bytes)</small>
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p class="text-muted">No files yet.</p>
+{% endif %}
+
+<form class="mt-2" method="post" action="/note/{{note.id}}/upload" enctype="multipart/form-data">
+  <div class="input-group" style="max-width:480px;">
+    <input class="form-control" type="file" name="file" accept=".pdf,.jpg,.jpeg,.png" required>
+    <button class="btn btn-outline-primary">Upload</button>
+  </div>
+</form>
+
+<hr>
 <a href="/notes" class="btn btn-secondary">Back</a>
 <a href="/note/{{note.id}}/edit" class="btn btn-primary">Edit</a>
 {% endblock %}
